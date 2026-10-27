@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { io } from "socket.io-client";
+import { releaseSocket, retainSocket } from "@/lib/socket-client";
 
 type ConnState = "connecting" | "online" | "offline" | "unauthorized";
 
@@ -23,20 +23,28 @@ export function SocketStatus() {
   const [state, setState] = useState<ConnState>("connecting");
 
   useEffect(() => {
-    const url =
-      process.env.NEXT_PUBLIC_SOCKET_URL ?? "http://localhost:3001";
+    const socket = retainSocket();
 
-    const socket = io(url, { withCredentials: true });
-
-    socket.on("connect", () => setState("online"));
-    socket.on("disconnect", () => setState("offline"));
-    socket.on("connect_error", (error) => {
+    const onConnect = () => setState("online");
+    const onDisconnect = () => setState("offline");
+    const onError = (error: Error) => {
       setState(error.message === "unauthorized" ? "unauthorized" : "offline");
-    });
+    };
+
+    socket.on("connect", onConnect);
+    socket.on("disconnect", onDisconnect);
+    socket.on("connect_error", onError);
+
+    // 复用已有连接时不会再触发一次 connect，状态得自己读一次
+    if (socket.connected) setState("online");
 
     return () => {
-      socket.removeAllListeners();
-      socket.disconnect();
+      // 只摘掉自己注册的监听。共用连接时用 removeAllListeners
+      // 会把别的组件的监听一起清掉，这是这类重构最容易踩的坑
+      socket.off("connect", onConnect);
+      socket.off("disconnect", onDisconnect);
+      socket.off("connect_error", onError);
+      releaseSocket();
     };
   }, []);
 

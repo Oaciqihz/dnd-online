@@ -5,3 +5,11 @@
 export type AuthState = { error: string | null };
 
 export const initialAuthState: AuthState = { error: null };
+
+/** 房间相关表单（建房 / 加入）的返回状态 */
+export type RoomFormState = { error: string | null };
+
+export const initialRoomState: RoomFormState = { error: null };
+
+/** 踢人的返回状态。客户端只关心成功与否和失败原因 */
+export type KickActionState = { ok: true } | { ok: false; error: string };

@@ -1,4 +1,10 @@
-import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core";
+import {
+  sqliteTable,
+  text,
+  integer,
+  index,
+  primaryKey,
+} from "drizzle-orm/sqlite-core";
 
 /**
  * 游客和注册用户共用一张表：
@@ -34,5 +40,53 @@ export const sessions = sqliteTable(
   (table) => [index("sessions_user_idx").on(table.userId)],
 );
 
+/**
+ * 房间。code 是给玩家口头传播用的短码（6 位，去掉了易混淆字符），
+ * 唯一约束保证不会撞车。
+ */
+export const rooms = sqliteTable(
+  "rooms",
+  {
+    id: text("id").primaryKey(),
+    code: text("code").notNull().unique(),
+    name: text("name").notNull(),
+    hostId: text("host_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    status: text("status", { enum: ["open", "closed"] })
+      .notNull()
+      .default("open"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [index("rooms_host_idx").on(table.hostId)],
+);
+
+/**
+ * 房间成员。用 (roomId, userId) 做联合主键，
+ * 数据库层面就保证了同一个人不会在同一个房间里出现两次
+ * —— 重复加入用 onConflictDoNothing 天然幂等。
+ */
+export const roomMembers = sqliteTable(
+  "room_members",
+  {
+    roomId: text("room_id")
+      .notNull()
+      .references(() => rooms.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: text("role", { enum: ["dm", "player"] })
+      .notNull()
+      .default("player"),
+    joinedAt: integer("joined_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.roomId, table.userId] }),
+    index("room_members_user_idx").on(table.userId),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
+export type RoomRow = typeof rooms.$inferSelect;
+export type RoomMemberRow = typeof roomMembers.$inferSelect;
