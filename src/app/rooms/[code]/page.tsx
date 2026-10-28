@@ -11,6 +11,12 @@ import {
   normalizeRoomCode,
   toMemberView,
 } from "@/lib/rooms";
+import {
+  listCharactersByOwner,
+  listRoomCharacterSummaries,
+  toSummary,
+} from "@/lib/characters";
+import { listRecentMessages } from "@/lib/chat-store";
 
 export default async function RoomPage({
   params,
@@ -47,6 +53,28 @@ export default async function RoomPage({
 
   // 拿到链接但还没加入的人：给一个明确的加入入口，而不是直接踢回大厅
   if (!isMember) {
+    // 已经结束的房间不再接受新成员。否则会出现「进来时团已经跑完了，
+    // 却还能加入」的怪状态，而且这时候加进来也看不到任何正在发生的事。
+    if (room.phase === "ended") {
+      return (
+        <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-6 py-16 text-center">
+          <p className="text-[12px] tracking-wide text-stone-500">房间邀请</p>
+          <h1 className="mt-2 font-serif text-2xl text-parchment">
+            {room.name}
+          </h1>
+          <p className="mt-2.5 text-sm leading-relaxed text-stone-400">
+            这一局已经结束了，不能再加入。让 DM 开个新房间吧。
+          </p>
+          <Link
+            href="/lobby"
+            className="mt-7 inline-block w-full rounded-lg bg-ember-500 px-4 py-2.5 text-[15px] font-medium text-ink-950 transition hover:bg-ember-400"
+          >
+            回到大厅
+          </Link>
+        </main>
+      );
+    }
+
     return (
       <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-6 py-16">
         <p className="text-[12px] tracking-wide text-ember-400">房间邀请</p>
@@ -78,12 +106,30 @@ export default async function RoomPage({
   }
 
   const isHost = room.hostId === user.id;
+
+  const characterByUser = await listRoomCharacterSummaries(room.id);
   const initialMembers = members.map((row) =>
-    toMemberView(row, new Set<string>()),
+    toMemberView(row, new Set<string>(), characterByUser.get(row.userId) ?? null),
   );
 
+  // 只有建完的卡能带进房间，草稿不进这个列表
+  const myRows = await listCharactersByOwner(user.id);
+  const myCharacters = myRows
+    .filter((row) => row.status === "ready")
+    .map(toSummary);
+
+  /**
+   * 首屏聊天记录。
+   *
+   * 这里读一次库而不是等 Socket 连上再拉，是为了让「打开房间」这件事
+   * 一步到位：页面出现时对话就在那儿，而不是先空一个聊天框、
+   * 半秒后内容跳出来。跑团时中途刷新页面很常见（换设备、误刷新），
+   * 每次都要等一跳才看到刚才说了什么，体验上差很多。
+   */
+  const initialMessages = await listRecentMessages(room.id);
+
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col px-6 py-10">
+    <main className="mx-auto flex min-h-dvh w-full max-w-3xl flex-col px-6 py-10">
       <header className="flex items-center justify-between">
         <Link
           href="/lobby"
@@ -129,16 +175,29 @@ export default async function RoomPage({
           code={room.code}
           selfId={user.id}
           initialMembers={initialMembers}
-          canKick={isHost}
+          initialPhase={room.phase}
+          initialStartedAt={room.startedAt}
+          initialBackgroundKey={room.backgroundKey}
+          initialBackgroundImage={room.backgroundImage}
+          initialBackgroundFit={
+            room.backgroundFit === "contain" ? "contain" : "cover"
+          }
+          initialSceneCaption={room.sceneCaption}
+          hostId={room.hostId}
+          myCharacters={myCharacters}
+          initialMessages={initialMessages}
         />
       </section>
 
-      <section className="mt-8 flex-1 rounded-xl border border-dashed border-ink-700 px-5 py-8 text-center">
-        <p className="text-sm text-stone-500">聊天、掷骰、角色卡还没做</p>
-        <p className="mt-1.5 text-[13px] text-stone-600">
-          当前只实现了「建房间 + 凭码加入 + 实时成员列表」
-        </p>
-      </section>
+      {/* 进行中时舞台已经占满主体，这个占位没必要留着挤屏幕 */}
+      {room.phase !== "playing" ? (
+        <section className="mt-8 flex-1 rounded-xl border border-dashed border-ink-700 px-5 py-8 text-center">
+          <p className="text-sm text-stone-500">聊天和掷骰还没做</p>
+          <p className="mt-1.5 text-[13px] text-stone-600">
+            DM 点「开始游戏」后会切到舞台视图，所有角色会出现在场景里
+          </p>
+        </section>
+      ) : null}
 
       <footer className="mt-8 border-t border-ink-800 pt-4">
         <SocketStatus />

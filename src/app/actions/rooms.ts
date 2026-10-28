@@ -10,9 +10,20 @@ import {
   kickMember,
   leaveRoom,
   normalizeRoomCode,
+  setMemberReady,
+  setRoomPhase,
+  setRoomScene,
 } from "@/lib/rooms";
-import { notifyRoomKick } from "@/lib/socket-notify";
-import type { KickActionState, RoomFormState } from "@/lib/form-state";
+import { notifyRoomKick, notifyRoomRefresh } from "@/lib/socket-notify";
+import { getMediaStore } from "@/lib/media/storage";
+import type {
+  KickActionState,
+  ReadyActionResult,
+  RoomFormState,
+  RoomPhaseActionResult,
+  SceneActionResult,
+} from "@/lib/form-state";
+import type { RoomPhase } from "@/lib/protocol";
 
 const createRoomSchema = z.object({
   name: z
@@ -119,4 +130,134 @@ export async function kickMemberAction(input: {
   revalidatePath(`/rooms/${code}`);
 
   return { ok: true };
+}
+
+const phaseSchema = z.object({
+  code: z.string().min(1),
+  phase: z.enum(["preparing", "playing", "ended"]),
+});
+
+/**
+ * 推进房间阶段。开始、结束、退回准备共用一个 action，
+ * 只传目标阶段 —— 权限和允许的流转都由 rooms.ts 里的 setRoomPhase 判断，
+ * 客户端不可能是「绕过 UI 就拿到额外能力」。
+ */
+export async function setRoomPhaseAction(input: {
+  code: string;
+  phase: RoomPhase;
+}): Promise<RoomPhaseActionResult> {
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+
+  const parsed = phaseSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "参数不对" };
+
+  const code = normalizeRoomCode(parsed.data.code);
+  const result = await setRoomPhase(user.id, code, parsed.data.phase);
+
+  if (!result.ok) return { ok: false, error: result.error };
+
+  // 数据库已经改了，广播只是让别人立刻看到。这一步失败不回滚。
+  await notifyRoomRefresh(code);
+  revalidatePath(`/rooms/${code}`);
+
+  return { ok: true, phase: result.phase };
+}
+
+const readySchema = z.object({
+  code: z.string().min(1),
+  ready: z.boolean(),
+});
+
+/**
+ * 玩家切换「我准备好了」。
+ *
+ * 这个动作刻意不触发 revalidatePath —— 它只影响一个布尔值，
+ * 靠实时广播同步就够，走一次服务端渲染反而会打断别人正在输入的聊天框。
+ */
+export async function toggleReadyAction(input: {
+  code: string;
+  ready: boolean;
+}): Promise<ReadyActionResult> {
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+
+  const parsed = readySchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "参数不对" };
+
+  const code = normalizeRoomCode(parsed.data.code);
+  const result = await setMemberReady(user.id, code, parsed.data.ready);
+
+  if (!result.ok) return { ok: false, error: result.error };
+
+  await notifyRoomRefresh(code);
+
+  return { ok: true, ready: result.ready };
+}
+
+const sceneSchema = z.object({
+  code: z.string().min(1),
+  /**
+   * builtin = 切回内置渐变（会清掉地图）；upload = 用已上传的地图。
+   * 这里放宽成 z.string() 而不是 z.enum()，是为了让「传了个乱七八糟的值」
+   * 走到 lib 层得到一句人话的错误，而不是 zod 的英文报错。
+   * 真正的白名单在 setRoomScene 里。
+   */
+  source: z.string().min(1),
+  backgroundKey: z.string().min(1),
+  fit: z.string().min(1),
+  caption: z.string().max(200),
+});
+
+/**
+ * DM 换场景。
+ *
+ * 写库之后通知 Socket 进程重播一次 room:state —— 背景 key、图片地址、
+ * 填充方式、场景描述全在那条广播里，所以不需要新的内部接口，
+ * 也不用知道房间里都有谁。
+ *
+ * 注意这个 action **不接受图片地址**。地图只能通过
+ * /api/rooms/[code]/scene 上传进来，那条路会做解码和体积校验。
+ * 如果这里允许传 image，就等于开了一个「绕过校验直接写库」的后门。
+ */
+export async function setSceneAction(input: {
+  code: string;
+  source: "builtin" | "upload";
+  backgroundKey: string;
+  fit: "cover" | "contain";
+  caption: string;
+}): Promise<SceneActionResult> {
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+
+  const parsed = sceneSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "参数不对" };
+
+  const code = normalizeRoomCode(parsed.data.code);
+  const result = await setRoomScene(user.id, code, {
+    source: parsed.data.source === "upload" ? "upload" : "builtin",
+    backgroundKey: parsed.data.backgroundKey,
+    fit: parsed.data.fit,
+    caption: parsed.data.caption,
+  });
+
+  if (!result.ok) return { ok: false, error: result.error };
+
+  // 切换来源时会有旧图被丢弃，文件要跟着删掉。
+  // 放在 action 里而不是 lib 里，是因为 lib/rooms 也被 Socket 进程引用，
+  // 不该让它连带依赖文件系统。
+  if (result.removedImage) {
+    await getMediaStore().remove(result.removedImage);
+  }
+
+  await notifyRoomRefresh(code);
+  revalidatePath(`/rooms/${code}`);
+
+  return {
+    ok: true,
+    backgroundKey: result.backgroundKey,
+    backgroundImage: result.backgroundImage,
+    backgroundFit: result.backgroundFit,
+    sceneCaption: result.sceneCaption,
+  };
 }

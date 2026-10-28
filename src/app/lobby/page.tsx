@@ -33,14 +33,23 @@ export default async function LobbyPage({
           </div>
         </div>
 
-        <form action={logoutAction}>
-          <button
-            type="submit"
-            className="rounded-lg border border-ink-700 px-3 py-1.5 text-[13px] text-stone-400 transition hover:border-red-900 hover:text-red-400"
+        <div className="flex items-center gap-2">
+          <Link
+            href="/characters"
+            className="rounded-lg border border-ink-700 px-3 py-1.5 text-[13px] text-stone-400 transition hover:border-ember-600 hover:text-ember-400"
           >
-            退出
-          </button>
-        </form>
+            我的角色卡
+          </Link>
+
+          <form action={logoutAction}>
+            <button
+              type="submit"
+              className="rounded-lg border border-ink-700 px-3 py-1.5 text-[13px] text-stone-400 transition hover:border-red-900 hover:text-red-400"
+            >
+              退出
+            </button>
+          </form>
+        </div>
       </header>
 
       <section className="mt-9">

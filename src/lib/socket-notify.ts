@@ -5,41 +5,62 @@ import {
 } from "./internal-auth";
 
 /**
- * 从 Next 进程通知 Socket 进程：这个人已经被移出房间，把他赶下线。
+ * 从 Next 进程调用 Socket 进程的内部接口。
  *
- * 为什么必须单独通知：两个进程各自独立，Server Action 删掉数据库记录后，
- * 对方的长连接仍然挂在 Socket 进程的房间频道里，会继续收到广播。
- * 只靠数据库，他要等到下次刷新页面才会发现自己已经不在了。
- *
- * 这个函数的失败是「可容忍」的：数据已经删了，对方只是晚一点掉线。
- * 所以这里不抛异常，只打日志，不阻断踢人这个动作本身。
+ * 两个进程各自独立运行，没有共享内存，跨进程的动作只能这样通知一次。
+ * 这里刻意不抛异常：调用方此时已经改完数据库了，
+ * 通知失败只会让别人的界面慢一点更新，不该把整个动作回滚。
  */
-export async function notifyRoomKick(
-  code: string,
-  userId: string,
+async function postInternal(
+  path: string,
+  body: unknown,
+  label: string,
 ): Promise<boolean> {
   try {
-    const response = await fetch(`${SOCKET_HTTP_URL}/internal/kick`, {
+    const response = await fetch(`${SOCKET_HTTP_URL}${path}`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         [INTERNAL_TOKEN_HEADER]: INTERNAL_TOKEN,
       },
-      body: JSON.stringify({ code, userId }),
+      body: JSON.stringify(body),
       cache: "no-store",
     });
 
     if (!response.ok) {
-      console.error(`[rooms] 实时服务拒绝了踢人通知，HTTP ${response.status}`);
+      console.error(`[socket-notify] ${label}被拒绝，HTTP ${response.status}`);
       return false;
     }
 
     return true;
   } catch (error) {
     console.error(
-      "[rooms] 连不上实时服务，成员已从名单里删除，但对方要刷新后才会掉线",
+      `[socket-notify] 连不上实时服务，${label}没有生效，需要刷新页面才看得到变化`,
       error,
     );
     return false;
   }
+}
+
+/**
+ * 告诉 Socket 进程：这个人已经被移出房间，把他赶下线。
+ *
+ * 只删数据库是不够的 —— 对方的长连接仍然挂在房间频道里，会继续收到广播，
+ * 要等到下次刷新页面才「突然」发现自己已经不在了。
+ */
+export async function notifyRoomKick(
+  code: string,
+  userId: string,
+): Promise<boolean> {
+  return postInternal("/internal/kick", { code, userId }, "移出成员");
+}
+
+/**
+ * 告诉 Socket 进程：这个房间的角色卡数据变了，重播一次房间状态。
+ *
+ * 角色卡摘要是随 room:state 一起下发的，所以不需要单独的事件类型，
+ * 也不需要知道是谁的卡变了 —— 重播一次，所有人的界面自动对齐。
+ */
+export async function notifyRoomRefresh(code: string): Promise<boolean> {
+  return postInternal("/internal/refresh", { code }, "刷新房间状态");
 }
